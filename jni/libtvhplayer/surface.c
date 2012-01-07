@@ -26,25 +26,33 @@
 #define SURFACE_DLSYM(dest, handle, name)		     \
   dest = (typeof(dest))dlsym(handle, name);		     \
   if(dest == NULL) {					     \
-    ERROR("Failed to load symbol %s", name);		     \
-    goto error;						     \
+    DEBUG("Failed to load symbol %s", name);		     \
   }							     \
 
 int surface_init(vout_sys_t *vo) {
   DEBUG("Initializing Surface library");
 
-  vo->so_handle = dlopen("libsurfaceflinger_client.so", RTLD_NOW);
+  vo->so_handle = dlopen("libgui.so", RTLD_NOW);
   if(vo->so_handle == NULL) {
+    DEBUG("libgui.so not loadable, trying libsurfaceflinger_client.so");
+    vo->so_handle = dlopen("libsurfaceflinger_client.so", RTLD_NOW);
+  }
+  if(vo->so_handle == NULL) {
+    DEBUG("libsurfaceflinger_client.so not loadable, trying libui.so");
     vo->so_handle = dlopen("libui.so", RTLD_NOW);
   }
 
   if(vo->so_handle == NULL) {
-    ERROR("Failed to load surface library");
+    ERROR("Failed to load any surface library");
     goto error;
   }
   
   SURFACE_DLSYM(vo->lock, vo->so_handle, "_ZN7android7Surface4lockEPNS0_11SurfaceInfoEb");
+  SURFACE_DLSYM(vo->lock2, vo->so_handle, "_ZN7android7Surface4lockEPNS0_11SurfaceInfoEPNS_6RegionE");
   SURFACE_DLSYM(vo->unlockAndPost, vo->so_handle, "_ZN7android7Surface13unlockAndPostEv");
+
+  if ((vo->lock == NULL && vo->lock2 == NULL) || vo->unlockAndPost == NULL)
+    goto error;
 
   pthread_mutex_init(&vo->mutex, NULL);
   pthread_cond_init(&vo->cond, NULL);
@@ -64,7 +72,12 @@ void surface_open(vout_sys_t *vo, void* handle) {
   vo->surface = handle;
 
   //Clear the buffer and get surface info
-  vo->lock(vo->surface, (void*)&vo->surface_info, 1);
+  if (vo->lock) {
+    vo->lock(vo->surface, (void*)&vo->surface_info, 1);
+  } else {
+    vo->lock2(vo->surface, (void*)&vo->surface_info, NULL);
+  }
+
   memset(vo->surface_info.bits, 0, sizeof(uint32_t) * vo->surface_info.size);
   vo->unlockAndPost(vo->surface);
 
@@ -77,7 +90,11 @@ void surface_render(vout_sys_t *vo, vout_buffer_t *vb) {
     return;
   }
 
-  vo->lock(vo->surface, (void*)&vo->surface_info, 1);
+  if (vo->lock) {
+    vo->lock(vo->surface, (void*)&vo->surface_info, 1);
+  } else {
+    vo->lock2(vo->surface, (void*)&vo->surface_info, NULL);
+  }
 
   if(vb->width != vo->surface_info.width || 
      vb->height != vo->surface_info.height) {
